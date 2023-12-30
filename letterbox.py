@@ -1,6 +1,7 @@
 """Solves the NYTimes' Letterboxed puzzle."""
 from collections.abc import Sequence
 import dataclasses
+import functools
 
 
 @dataclasses.dataclass
@@ -65,8 +66,8 @@ class Solution:
         return self.coverage == available_letters
 
 
-def find_words(sides: Sequence[str], word: str, word_node: TrieNode, from_side: int):
-    """Find all words."""
+def find_words(sides: Sequence[str], word: str, word_node: TrieNode, from_side: int) -> list[str]:
+    """Find all valid words from a prefix."""
     results = []
     for side_index, side in enumerate(sides):
         if side_index == from_side:
@@ -77,56 +78,72 @@ def find_words(sides: Sequence[str], word: str, word_node: TrieNode, from_side: 
             results.extend(find_words(sides, word + letter,
                            word_node.children[letter], side_index))
     if word_node.is_word and len(word) >= 3:
-        results.append((from_side, word))
+        results.append(word)
     return results
 
 
 @dataclasses.dataclass
 class Solutions:
-    """All solutions found to the puzzle, by length (number of words)."""
+    """All solutions to the puzzle found so far, by length (number of words)."""
     by_length: dict[int, list[Solution]
                     ] = dataclasses.field(default_factory=dict)
+
+    # All words found so far, by length.
+    words_so_far_by_length: dict[int, set[str]
+                                 ] = dataclasses.field(default_factory=dict)
 
     def insert(self, solution: Solution):
         """Insert a new solution."""
         self.by_length.setdefault(solution.length(), []).append(solution)
+        self.words_so_far_by_length.setdefault(
+            solution.length(), set()).update(solution.words)
 
-    def count(self, for_length: int):
-        """How many solutions for """
+    def count(self, for_length: int) -> int:
+        """How many solutions of given length."""
         if for_length not in self.by_length:
             return 0
         return len(self.by_length[for_length])
 
+    def words_so_far(self, for_length: int) -> set[str]:
+        if for_length not in self.words_so_far_by_length:
+            return set()
+        return self.words_so_far_by_length[for_length]
+
 
 class Puzzle:
     """A instance of the puzzle to solve."""
-    all_letters: set[str]
-    sides: Sequence[str]
-    trie_root: TrieNode
+    all_letters = set[str]
+    all_possible_words: dict[str, list[str]]
 
     def __init__(self, dictionary, sides: Sequence[str]):
         self.all_letters = {letter for side in sides for letter in side}
-        self.sides = sides
-        self.trie_root = build_trie(dictionary, self.all_letters)
+        trie = build_trie(dictionary, self.all_letters)
+        # Build the list of all possible words for each starting letter.
+        self.all_possible_words = {}
+        for i, side in enumerate(sides):
+            for letter in side:
+                words = []
+                if letter not in trie.children:
+                    continue
+                words.extend(find_words(
+                    sides, letter, trie.children[letter], from_side=i))
+                # Put the longest words first.
+                words.sort(key=len, reverse=True)
+                self.all_possible_words[letter] = words
 
 
 def find_solutions(solutions: Solutions,
                    puzzle: Puzzle,
                    current_solution: Solution,
-                   starting_letter: str,
-                   starting_side: int):
+                   starting_letter: str):
     """Find all solutions to a puzzle."""
-    # Limit the search space
+    # Limit the search space.
     max_count = 10
-    max_length = 4
+    max_length = 5
     # Only add the current word if it increases the coverage. We make the assumption that there exists a solution
     # that doesn't require us to "spend" a word that doesn't increase the number of covered letters here. Otherwise
     # we might end up with very long solution sequences.
     only_increase_coverage = True
-
-    word_node = puzzle.trie_root.children.get(starting_letter)
-    if word_node is None:
-        return
 
     # We don't want solutions longer than 4.
     if current_solution.length() >= max_length:
@@ -136,25 +153,24 @@ def find_solutions(solutions: Solutions,
     if solutions.count(current_solution.length() + 1) >= max_count:
         return
 
-    # Try extending the current word first
-    all_words = find_words(puzzle.sides, starting_letter,
-                           word_node, starting_side)
-    # Greedy algorithm: search the longest words first.
-    all_words.sort(key=lambda x: len(x[1]), reverse=True)
+    # Find all words that can be made from the starting letter.
+    all_words = puzzle.all_possible_words[starting_letter]
 
-    for new_side, new_word in all_words:
+    for new_word in all_words:
         updated_coverage = current_solution.coverage | set(new_word)
         if only_increase_coverage and len(updated_coverage) <= current_solution.coverage_length():
             return
         s = Solution(current_solution.words + [new_word], updated_coverage)
+        # Only add the solution if all of its words haven't been found yet.
+        words_found = solutions.words_so_far(s.length())
+        if any(word in words_found for word in s.words):
+            continue
+
         if s.solves(puzzle.all_letters):
             solutions.insert(s)
             return
-
         # Start searching from the last letter of the new word.
-        new_node = puzzle.trie_root.children.get(new_word[-1])
-        if new_node is not None:
-            find_solutions(solutions, puzzle, s, new_word[-1], new_side)
+        find_solutions(solutions, puzzle, s, new_word[-1])
 
 
 def main():
@@ -163,16 +179,14 @@ def main():
     dictionary = [x.rstrip() for x in dictionary]
 
     # Today's problem.
-    sides = ['atr', 'guf', 'qin', 'lec']
+    sides = ['btl', 'ehy', 'ocv', 'jwi']
 
     puzzle = Puzzle(dictionary, sides)
     solutions = Solutions()
-    for side_index, letters in enumerate(sides):
-        for letter in letters:
-            if letter not in puzzle.trie_root.children:
-                continue
+    for side in sides:
+        for letter in side:
             find_solutions(solutions, puzzle, Solution(
-                words=[], coverage=set()), letter, side_index)
+                words=[], coverage=set()), letter)
     print('Solutions:')
     for length in sorted(solutions.by_length):
         sols = solutions.by_length[length]
